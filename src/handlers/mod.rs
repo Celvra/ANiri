@@ -64,12 +64,13 @@ use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 
+use crate::backend::Backend;
 pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
 use crate::input::click_grab::ClickGrab;
 use crate::layout::workspace::WorkspaceId;
 use crate::layout::{ActivateWindow, LayoutElement};
-use crate::backend::Backend;
-use crate::niri::{DndIcon, NewClient, State};use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
+use crate::niri::{DndIcon, NewClient, State};
+use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{
     self, ForeignToplevelHandler, ForeignToplevelManagerState,
 };
@@ -299,7 +300,12 @@ impl KeyboardShortcutsInhibitHandler for State {
 impl SelectionHandler for State {
     type SelectionUserData = Arc<[u8]>;
 
-    fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
         // Forward a client-set clipboard to the Android consumer.
         if ty == SelectionTarget::Clipboard {
             if let Some(source) = source {

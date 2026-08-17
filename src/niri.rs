@@ -723,8 +723,7 @@ impl State {
             || env::var_os("DISPLAY").is_some();
 
         let mut backend = if env::var_os("ANLAND").is_some() {
-            let anland = Anland::new()
-                .context("error initializing the Anland backend")?;
+            let anland = Anland::new().context("error initializing the Anland backend")?;
             Backend::Anland(anland)
         } else if headless {
             let headless = Headless::new();

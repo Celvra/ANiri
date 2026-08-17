@@ -4,11 +4,10 @@ use std::path::PathBuf;
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, ButtonState, Device,
-    DeviceCapability, Event, InputBackend, KeyState, KeyboardKeyEvent, PointerAxisEvent,
-    PointerButtonEvent, PointerMotionAbsoluteEvent, PointerMotionEvent, TouchDownEvent,
-    TouchFrameEvent, TouchMotionEvent, TouchUpEvent, TouchEvent, TouchSlot,
+    DeviceCapability, Event, InputBackend, KeyState, KeyboardKeyEvent, Keycode, PointerAxisEvent,
+    PointerButtonEvent, PointerMotionAbsoluteEvent, PointerMotionEvent, TouchDownEvent, TouchEvent,
+    TouchFrameEvent, TouchMotionEvent, TouchSlot, TouchUpEvent,
 };
-use smithay::backend::input::Keycode;
 use smithay::output::Output;
 
 use super::ffi;
@@ -464,8 +463,11 @@ impl InputBackend for AnlandInputBackend {
 }
 
 /// Convert a raw anland `InputEvent` into a smithay `InputEvent`.
-pub fn translate(backend: &AnlandInputBackend, raw: &ffi::InputEvent) -> Option<smithay::backend::input::InputEvent<AnlandInputBackend>> {
-    use smithay::backend::input::{InputEvent as I, KeyState, ButtonState};
+pub fn translate(
+    backend: &AnlandInputBackend,
+    raw: &ffi::InputEvent,
+) -> Option<smithay::backend::input::InputEvent<AnlandInputBackend>> {
+    use smithay::backend::input::{ButtonState, InputEvent as I, KeyState};
 
     let base = |x: f64, y: f64| backend.base(x, y);
 
@@ -535,7 +537,10 @@ pub fn translate(backend: &AnlandInputBackend, raw: &ffi::InputEvent) -> Option<
                         },
                     }),
                     ffi::INPUT_ACTION_UP => Some(I::TouchUp {
-                        event: AnlandTouchUpEvent { base: base(f64::from(t.x), f64::from(t.y)), slot },
+                        event: AnlandTouchUpEvent {
+                            base: base(f64::from(t.x), f64::from(t.y)),
+                            slot,
+                        },
                     }),
                     _ => None,
                 }

@@ -232,7 +232,11 @@ extern "C" {
     #[cfg(have_anland_audio)]
     pub fn anland_camera_stop();
     #[cfg(have_anland_audio)]
-    pub fn anland_camera_set_resources(ctrl_fd: c_int, stream_fds: *const c_int, num_cameras: c_int);
+    pub fn anland_camera_set_resources(
+        ctrl_fd: c_int,
+        stream_fds: *const c_int,
+        num_cameras: c_int,
+    );
     #[cfg(have_anland_audio)]
     pub fn anland_camera_clear();
 }

@@ -153,9 +153,10 @@ impl Anland {
         // DRIVER_OVERRIDE=kgsl + FD_FORCE_KGSL=1 for native Adreno GL. Do NOT
         // touch them here.
 
-        let socket_path = std::env::var("ANLAND_SOCKET").unwrap_or_else(|_| "/run/display.sock".to_string());
-        let path = std::ffi::CString::new(socket_path.as_str())
-            .context("invalid ANLAND_SOCKET path")?;
+        let socket_path =
+            std::env::var("ANLAND_SOCKET").unwrap_or_else(|_| "/run/display.sock".to_string());
+        let path =
+            std::ffi::CString::new(socket_path.as_str()).context("invalid ANLAND_SOCKET path")?;
 
         let mut ctx = std::ptr::null_mut();
         let r = unsafe { ffi::connect_to_deamon(&mut ctx, path.as_ptr()) };
@@ -167,7 +168,9 @@ impl Anland {
         let mut height = 0u32;
         let mut format = 0u32;
         let mut refresh = 0u32;
-        if unsafe { ffi::get_screen_info(ctx, &mut width, &mut height, &mut format, &mut refresh) } < 0 {
+        if unsafe { ffi::get_screen_info(ctx, &mut width, &mut height, &mut format, &mut refresh) }
+            < 0
+        {
             unsafe { ffi::disconnect(ctx) };
             anyhow::bail!("anland: error getting screen info");
         }
@@ -283,7 +286,9 @@ impl Anland {
                     &feedback,
                 ),
             Err(err) => {
-                warn!("anland: failed building default dmabuf feedback, falling back to v3: {err:?}");
+                warn!(
+                    "anland: failed building default dmabuf feedback, falling back to v3: {err:?}"
+                );
                 let primary_formats = renderer.dmabuf_formats();
                 niri.dmabuf_state
                     .create_global::<crate::niri::State>(&niri.display_handle, primary_formats)
@@ -295,8 +300,8 @@ impl Anland {
     fn create_renderer(&mut self) -> anyhow::Result<()> {
         let display = create_egl_display()?;
         let context = EGLContext::new(&display).context("error creating EGL context")?;
-        let mut renderer = unsafe { GlesRenderer::new(context) }
-            .context("error creating GLES renderer")?;
+        let mut renderer =
+            unsafe { GlesRenderer::new(context) }.context("error creating GLES renderer")?;
 
         resources::init(&mut renderer);
         shaders::init(&mut renderer);
@@ -425,9 +430,13 @@ impl Anland {
         let in_fallback = unsafe { ffi::is_fallback(self.ctx) };
         if in_fallback {
             #[cfg(have_anland_audio)]
-            unsafe { ffi::anland_audio_set_fd(-1) };
+            unsafe {
+                ffi::anland_audio_set_fd(-1)
+            };
             #[cfg(have_anland_audio)]
-            unsafe { ffi::anland_camera_clear() };
+            unsafe {
+                ffi::anland_camera_clear()
+            };
             if self.try_reconnect() {
                 self.on_reconnect(niri);
             }
@@ -445,6 +454,7 @@ impl Anland {
     /// content and forward it to the consumer once it arrives.
     fn read_and_forward_clipboard(&mut self, niri: &mut Niri) {
         use std::os::fd::FromRawFd;
+
         use smithay::wayland::selection::data_device::request_data_device_client_selection;
 
         let mut fds = [0; 2];
@@ -507,12 +517,7 @@ impl Anland {
             },
         };
         unsafe {
-            ffi::push_output_event_with_length(
-                self.ctx,
-                &ev,
-                bytes.as_ptr().cast(),
-                bytes.len(),
-            );
+            ffi::push_output_event_with_length(self.ctx, &ev, bytes.as_ptr().cast(), bytes.len());
         }
     }
 
@@ -554,7 +559,10 @@ impl Anland {
     }
 
     /// Polls one input event from the consumer.
-    fn poll_input(&mut self, niri: &mut Niri) -> Option<smithay::backend::input::InputEvent<input::AnlandInputBackend>> {
+    fn poll_input(
+        &mut self,
+        niri: &mut Niri,
+    ) -> Option<smithay::backend::input::InputEvent<input::AnlandInputBackend>> {
         let mut raw = unsafe { mem::zeroed::<ffi::InputEvent>() };
         let r = unsafe { ffi::poll_input_event(self.ctx, &mut raw, 0) };
         match r {
@@ -618,7 +626,8 @@ impl Anland {
     #[cfg(have_anland_audio)]
     fn handle_resource_reply(&mut self, _niri: &mut Niri, service: u32) {
         let mut fds = [0; 9]; // ctrl + up to MAX_CAMERAS streams
-        let fdnum = unsafe { ffi::poll_input_event_extend_fds(self.ctx, fds.as_mut_ptr(), 9, 5000) };
+        let fdnum =
+            unsafe { ffi::poll_input_event_extend_fds(self.ctx, fds.as_mut_ptr(), 9, 5000) };
         if fdnum < 1 {
             warn!("anland: failed receiving service fds");
             return;
@@ -671,7 +680,11 @@ impl Anland {
         if fd >= 0 {
             let mut val = 0u64;
             unsafe {
-                libc::read(fd, &mut val as *mut u64 as *mut libc::c_void, mem::size_of::<u64>());
+                libc::read(
+                    fd,
+                    &mut val as *mut u64 as *mut libc::c_void,
+                    mem::size_of::<u64>(),
+                );
             }
         }
     }
@@ -704,8 +717,7 @@ impl Anland {
         if elapsed >= Duration::from_secs(2) {
             info!(
                 "anland: frame rate = {:.1} fps over {} frames",
-                self.frame_stats_count as f64
-                    / (elapsed.as_micros() as f64 / 1_000_000.0),
+                self.frame_stats_count as f64 / (elapsed.as_micros() as f64 / 1_000_000.0),
                 self.frame_stats_count
             );
             self.frame_stats_count = 0;
@@ -721,7 +733,8 @@ impl Anland {
                 now,
                 refresh,
                 self.frame_seq,
-                wp_presentation_feedback::Kind::Vsync | wp_presentation_feedback::Kind::HwCompletion,
+                wp_presentation_feedback::Kind::Vsync
+                    | wp_presentation_feedback::Kind::HwCompletion,
             );
             output_state.frame_clock.presented(now);
         }
@@ -772,7 +785,10 @@ impl Anland {
         // The consumer may have rotated or resized; if the buffer no longer matches
         // the output, adapt the output to the consumer's current size and continue
         // instead of skipping every frame.
-        let size = output.current_mode().map(|m| m.size).unwrap_or(Size::from((0, 0)));
+        let size = output
+            .current_mode()
+            .map(|m| m.size)
+            .unwrap_or(Size::from((0, 0)));
         if size.w != info.width as i32 || size.h != info.height as i32 {
             self.adapt_to_size(niri, &output, info.width as i32, info.height as i32);
         }
@@ -798,7 +814,11 @@ impl Anland {
                     Modifier::from(info.modifier),
                     DmabufFlags::empty(),
                 );
-                builder.add_plane(unsafe { OwnedFd::from_raw_fd(dup) }, info.offset, info.stride);
+                builder.add_plane(
+                    unsafe { OwnedFd::from_raw_fd(dup) },
+                    info.offset,
+                    info.stride,
+                );
                 match builder.build() {
                     Some(dmabuf) => dmabuf,
                     None => {
