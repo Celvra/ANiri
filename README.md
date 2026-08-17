@@ -36,7 +36,7 @@ etc.
 
 this projects have already tested on my OnePlus 13 with archlinuxarm container (with droidspaces support kernel) and working properly. 
 
-[How to install](hhttps://x0.fan/posts/install-niri-on-anland/)
+[How to install](https://x0.fan/posts/install-niri-on-anland/)
 
 ## About
 
