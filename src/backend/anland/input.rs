@@ -408,6 +408,11 @@ impl TouchFrameEvent<AnlandInputBackend> for AnlandTouchFrameEvent {}
 pub struct AnlandInputBackend {
     pub native_w: u32,
     pub native_h: u32,
+    /// Scale from the consumer's physical pixel deltas to niri's logical
+    /// coordinate space. The anland consumer reports pointer motion in its
+    /// native (physical) pixel space, while smithay expects relative motion in
+    /// logical output coordinates.
+    pub scale: f64,
     pub time_offset: u64,
 }
 
@@ -416,6 +421,7 @@ impl Default for AnlandInputBackend {
         Self {
             native_w: 0,
             native_h: 0,
+            scale: 1.5,
             time_offset: 0,
         }
     }
@@ -489,10 +495,21 @@ pub fn translate(
             }
             ffi::INPUT_TYPE_POINTER_MOTION => {
                 let m = raw.data.pointer_motion;
-                // The consumer provides an absolute position alongside the deltas,
-                // so report it as an absolute motion to keep the cursor in sync.
-                Some(I::PointerMotionAbsolute {
-                    event: AnlandPointerMotionAbsoluteEvent(base(f64::from(m.x), f64::from(m.y))),
+                // The consumer also includes an absolute position, but using it
+                // here makes pointer-lock clients fight the compositor's warp.
+                // Feed the relative deltas instead so both the desktop pointer
+                // and zwp_relative_pointer follow the same path.
+                let scale = if backend.scale.is_finite() && backend.scale > 0. {
+                    backend.scale
+                } else {
+                    1.
+                };
+                Some(I::PointerMotion {
+                    event: AnlandPointerMotionEvent {
+                        base: base(f64::from(m.x), f64::from(m.y)),
+                        dx: f64::from(m.dx) / scale,
+                        dy: f64::from(m.dy) / scale,
+                    },
                 })
             }
             ffi::INPUT_TYPE_POINTER_BUTTON => {
@@ -550,5 +567,63 @@ pub fn translate(
             }),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::backend::input::InputEvent;
+
+    fn pointer_event(dx: f32, dy: f32) -> ffi::InputEvent {
+        ffi::InputEvent {
+            type_: ffi::INPUT_TYPE_POINTER_MOTION,
+            data: ffi::InputEventData {
+                pointer_motion: ffi::PointerMotionEvent {
+                    x: 321.,
+                    y: 654.,
+                    dx,
+                    dy,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn pointer_motion_uses_scaled_relative_deltas() {
+        let backend = AnlandInputBackend {
+            native_w: 2376,
+            native_h: 1080,
+            scale: 1.5,
+            time_offset: 0,
+        };
+
+        let event = translate(&backend, &pointer_event(12., -6.)).expect("pointer event");
+        let InputEvent::PointerMotion { event } = event else {
+            panic!("expected relative pointer motion");
+        };
+
+        assert!((event.dx - 8.).abs() < f64::EPSILON);
+        assert!((event.dy + 4.).abs() < f64::EPSILON);
+        // The absolute sample remains available for consumers that need it, but
+        // it must not replace the relative deltas above.
+        assert_eq!(event.base.x, 321.);
+        assert_eq!(event.base.y, 654.);
+    }
+
+    #[test]
+    fn pointer_motion_uses_unit_scale_for_invalid_scale() {
+        let backend = AnlandInputBackend {
+            scale: f64::NAN,
+            ..Default::default()
+        };
+
+        let event = translate(&backend, &pointer_event(3., -2.)).expect("pointer event");
+        let InputEvent::PointerMotion { event } = event else {
+            panic!("expected relative pointer motion");
+        };
+
+        assert_eq!(event.dx, 3.);
+        assert_eq!(event.dy, -2.);
     }
 }

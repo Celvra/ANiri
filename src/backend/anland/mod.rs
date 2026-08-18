@@ -41,6 +41,16 @@ use crate::utils::{get_monotonic_time, logical_output};
 /// latency; the anland lockstep throughput is bound by this plus the render.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+/// How long a new consumer buffer size must remain unchanged before it becomes
+/// the output mode. Android can briefly alternate portrait and landscape
+/// buffers during rotation, so changing the mode on the first frame causes the
+/// compositor geometry to flap with it.
+const SIZE_STABILITY_DURATION: Duration = Duration::from_millis(500);
+
+/// Minimum interval between two output mode changes. This keeps a late buffer
+/// from immediately undoing a size that just passed the stability window.
+const SIZE_ADAPT_COOLDOWN: Duration = Duration::from_millis(500);
+
 /// Converts the anland protocol pixel format into a DRM fourcc.
 fn protocol_format_to_fourcc(format: u32) -> Fourcc {
     // Same as kwin's anland backend: 1 == DRM_FORMAT_ABGR8888, else XRGB8888.
@@ -96,6 +106,29 @@ fn create_egl_display() -> anyhow::Result<EGLDisplay> {
     Ok(display)
 }
 
+fn duration_to_micros(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+/// Record an observed buffer size and report whether the same candidate has
+/// remained stable for the requested duration.
+fn pending_size_is_stable(
+    pending: &mut Option<(i32, i32, u64)>,
+    observed: (i32, i32),
+    now_usec: u64,
+    stability: Duration,
+) -> bool {
+    match pending {
+        Some((width, height, since)) if (*width, *height) == observed => {
+            now_usec.saturating_sub(*since) >= duration_to_micros(stability)
+        }
+        _ => {
+            *pending = Some((observed.0, observed.1, now_usec));
+            false
+        }
+    }
+}
+
 pub struct Anland {
     ctx: *mut ffi::display_ctx,
     screen_w: u32,
@@ -107,6 +140,10 @@ pub struct Anland {
     ipc_outputs: Arc<Mutex<IpcOutputMap>>,
     output: Option<Output>,
     input_backend: input::AnlandInputBackend,
+    /// Candidate consumer size and the monotonic timestamp at which it was
+    /// first observed continuously.
+    pending_size: Option<(i32, i32, u64)>,
+    size_adapt_cooldown_until: u64,
     /// Whether the consumer has presented the last frame (or just connected) and
     /// is ready for another one. Gates rendering so we never draw into a buffer
     /// the consumer is still displaying.
@@ -176,11 +213,11 @@ impl Anland {
         }
 
         info!("anland: connected to daemon, screen {width}x{height} fmt {format} refresh {refresh} mHz");
-
         let ipc_outputs = Arc::new(Mutex::new(IpcOutputMap::new()));
         let input_backend = input::AnlandInputBackend {
             native_w: width,
             native_h: height,
+            scale: 1.5,
             time_offset: 0,
         };
         let (selection_tx, selection_rx) = std::sync::mpsc::channel();
@@ -197,6 +234,8 @@ impl Anland {
             ipc_outputs,
             output: None,
             input_backend,
+            pending_size: None,
+            size_adapt_cooldown_until: 0,
             consumer_ready: false,
             pending_feedback: None,
             frame_seq: 0,
@@ -367,7 +406,8 @@ impl Anland {
 
         self.output = Some(output.clone());
         self.damage_tracker = Some(OutputDamageTracker::from_output(&output));
-        niri.add_output(output, None, false);
+        niri.add_output(output.clone(), None, false);
+        self.input_backend.scale = output.current_scale().fractional_scale();
     }
 
     /// The consumer switched resolution/orientation. Adopt the new buffer size as
@@ -385,6 +425,7 @@ impl Anland {
         };
         output.change_current_state(Some(mode), None, None, None);
         output.set_preferred(mode);
+        self.input_backend.scale = output.current_scale().fractional_scale();
 
         {
             let mut ipc_outputs = self.ipc_outputs.lock().unwrap();
@@ -552,6 +593,11 @@ impl Anland {
         self.consumer_dmabufs = [const { None }; ffi::MAX_BUFS];
         self.input_backend.native_w = self.screen_w;
         self.input_backend.native_h = self.screen_h;
+        if let Some(output) = self.output.as_ref() {
+            self.input_backend.scale = output.current_scale().fractional_scale();
+        }
+        self.pending_size = None;
+        self.size_adapt_cooldown_until = 0;
         self.pending_feedback = None;
         if let Some(output) = self.output.clone() {
             niri.queue_redraw(&output);
@@ -782,15 +828,31 @@ impl Anland {
             info.width, info.height, info.stride
         ));
 
-        // The consumer may have rotated or resized; if the buffer no longer matches
-        // the output, adapt the output to the consumer's current size and continue
-        // instead of skipping every frame.
+        // The consumer may briefly alternate portrait and landscape buffers
+        // while rotating. Only adopt a size that remains stable, but keep
+        // rendering during the wait: the consumer's lockstep protocol requires
+        // one render completion for every selected buffer.
         let size = output
             .current_mode()
             .map(|m| m.size)
             .unwrap_or(Size::from((0, 0)));
-        if size.w != info.width as i32 || size.h != info.height as i32 {
-            self.adapt_to_size(niri, &output, info.width as i32, info.height as i32);
+        let buffer_size = (info.width as i32, info.height as i32);
+        if (size.w, size.h) == buffer_size {
+            self.pending_size = None;
+        } else {
+            let now_usec = get_monotonic_time().as_micros() as u64;
+            let candidate_stable = pending_size_is_stable(
+                &mut self.pending_size,
+                buffer_size,
+                now_usec,
+                SIZE_STABILITY_DURATION,
+            );
+            if candidate_stable && now_usec >= self.size_adapt_cooldown_until {
+                self.pending_size = None;
+                self.size_adapt_cooldown_until =
+                    now_usec.saturating_add(duration_to_micros(SIZE_ADAPT_COOLDOWN));
+                self.adapt_to_size(niri, &output, buffer_size.0, buffer_size.1);
+            }
         }
 
         let Some(renderer) = self.renderer.as_mut() else {
@@ -979,5 +1041,50 @@ impl Drop for Anland {
             unsafe { ffi::disconnect(self.ctx) };
             self.ctx = std::ptr::null_mut();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_size_requires_continuous_stability() {
+        let stability = Duration::from_millis(500);
+        let mut pending = None;
+
+        assert!(!pending_size_is_stable(
+            &mut pending,
+            (2376, 1080),
+            1_000_000,
+            stability,
+        ));
+        assert_eq!(pending, Some((2376, 1080, 1_000_000)));
+        assert!(!pending_size_is_stable(
+            &mut pending,
+            (2376, 1080),
+            1_499_999,
+            stability,
+        ));
+        assert!(pending_size_is_stable(
+            &mut pending,
+            (2376, 1080),
+            1_500_000,
+            stability,
+        ));
+
+        // A different orientation starts a fresh stability window.
+        assert!(!pending_size_is_stable(
+            &mut pending,
+            (1080, 2376),
+            1_500_001,
+            stability,
+        ));
+        assert!(pending_size_is_stable(
+            &mut pending,
+            (1080, 2376),
+            2_000_001,
+            stability,
+        ));
     }
 }
