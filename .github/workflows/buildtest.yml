@@ -46,7 +46,7 @@ jobs:
         run: cargo install cross
 
       - name: Install glib2
-        run: sudo apt install glib-2.0
+        run: sudo apt install glibc
 
       - name: Build
         run: cross build --all --frozen --release --target ${{ matrix.target }}
